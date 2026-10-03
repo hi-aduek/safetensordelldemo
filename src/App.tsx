@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArcType, Viewer, createWorldTerrainAsync, Cartesian2, Cartesian3, Cartographic, Color, ConstantPositionProperty, ConstantProperty, Entity, GeoJsonDataSource, HeightReference, HorizontalOrigin, ImageMaterialProperty, KmlDataSource, Cesium3DTileset, Cesium3DTileStyle, Ion, LabelStyle, Math as CesiumMath, Matrix4, PolygonHierarchy, PolylineArrowMaterialProperty, ScreenSpaceEventHandler, ScreenSpaceEventType, Transforms, VerticalOrigin } from 'cesium'
-import { Activity, Bot, Check, ChevronDown, CircleHelp, Compass, FileUp, ImagePlus, Layers3, MapPin, Pencil, Plus, Send, Settings2, Sparkles, X } from 'lucide-react'
+import { Activity, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Compass, FileUp, ImagePlus, Layers3, MapPin, Pencil, Plus, Send, Settings2, Sparkles, X } from 'lucide-react'
 
 type FeatureCollection = { type: 'FeatureCollection'; features: Array<{ type: 'Feature'; geometry: { type: string; coordinates: unknown }; properties: Record<string, unknown> }> }
 type Proposal = { summary: string; geojson: FeatureCollection }
@@ -44,8 +44,10 @@ export default function App() {
   const mapRoot = useRef<HTMLDivElement>(null)
   const viewer = useRef<Viewer | null>(null)
   const googleTileset = useRef<Cesium3DTileset | null>(null)
+  const googleTilesLoading = useRef(false)
   const googleOriginalStyle = useRef<Cesium3DTileStyle | undefined>(undefined)
   const [layers, setLayers] = useState<Layer[]>([])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const layersRef = useRef<Layer[]>([])
   layersRef.current = layers
   const [prompt, setPrompt] = useState('')
@@ -197,35 +199,73 @@ export default function App() {
   }, [sceneDraft])
 
   useEffect(() => {
+    let cancelled = false
     const mapViewer = viewer.current
     if (imageProjectionEntity.current && mapViewer) mapViewer.entities.remove(imageProjectionEntity.current)
     imageProjectionEntity.current = null
-    if (!mapViewer || sceneDraft) return
+    if (!mapViewer || sceneDraft) return () => { cancelled = true }
     const layer = layers.find((item) => item.id === selectedSceneId && item.scene && item.visible)
-    if (!layer?.scene?.imageUrl) return
+    const imageUrl = layer?.scene?.imageUrl
+    if (!layer?.scene || typeof imageUrl !== 'string') return () => { cancelled = true }
     const scene = layer.scene
     const target = scene.areaOfInterest ?? { longitude: scene.longitude, latitude: scene.latitude, groundAltitude: scene.groundAltitude }
     const center = Cartesian3.fromDegrees(target.longitude, target.latitude, target.groundAltitude + 1)
     const enu = Transforms.eastNorthUpToFixedFrame(center)
-    const heading = CesiumMath.toRadians(scene.heading)
-    const rightEast = Math.cos(heading)
-    const rightNorth = -Math.sin(heading)
-    const forwardEast = Math.sin(heading)
-    const forwardNorth = Math.cos(heading)
-    const halfWidth = 18
-    const halfLength = 12
-    const imageCorners = [[-halfWidth, -halfLength], [halfWidth, -halfLength], [halfWidth, halfLength], [-halfWidth, halfLength]].map(([right, forward]) => {
-      const local = new Cartesian3(rightEast * right! + forwardEast * forward!, rightNorth * right! + forwardNorth * forward!, 0)
-      return Matrix4.multiplyByPoint(enu, local, new Cartesian3())
-    })
-    imageProjectionEntity.current = mapViewer.entities.add({
-      polygon: {
-        hierarchy: new PolygonHierarchy(imageCorners),
-        perPositionHeight: true,
-        material: new ImageMaterialProperty({ image: scene.imageUrl, color: Color.WHITE.withAlpha(0.25), transparent: true }),
-        outline: false,
-      },
-    })
+    const observer = Cartesian3.fromDegrees(scene.longitude, scene.latitude, scene.groundAltitude + scene.altitude)
+    let sightline: Cartesian3
+    if (scene.areaOfInterest) {
+      sightline = Cartesian3.normalize(Cartesian3.subtract(center, observer, new Cartesian3()), new Cartesian3())
+    } else {
+      const heading = CesiumMath.toRadians(scene.heading)
+      const pitch = CesiumMath.toRadians(scene.pitch)
+      const localSightline = new Cartesian3(Math.sin(heading) * Math.cos(pitch), Math.cos(heading) * Math.cos(pitch), Math.sin(pitch))
+      const observerFrame = Transforms.eastNorthUpToFixedFrame(observer)
+      sightline = Cartesian3.normalize(Matrix4.multiplyByPointAsVector(observerFrame, localSightline, new Cartesian3()), new Cartesian3())
+    }
+    const north = Matrix4.multiplyByPointAsVector(enu, new Cartesian3(0, 1, 0), new Cartesian3())
+    const worldUp = Matrix4.multiplyByPointAsVector(enu, new Cartesian3(0, 0, 1), new Cartesian3())
+    const upDot = Cartesian3.dot(worldUp, sightline)
+    let imageUp = Cartesian3.subtract(worldUp, Cartesian3.multiplyByScalar(sightline, upDot, new Cartesian3()), new Cartesian3())
+    if (Cartesian3.magnitude(imageUp) < 1e-5) {
+      const northDot = Cartesian3.dot(north, sightline)
+      imageUp = Cartesian3.subtract(north, Cartesian3.multiplyByScalar(sightline, northDot, new Cartesian3()), new Cartesian3())
+    }
+    Cartesian3.normalize(imageUp, imageUp)
+    const imageRight = Cartesian3.normalize(Cartesian3.cross(sightline, imageUp, new Cartesian3()), new Cartesian3())
+    imageUp = Cartesian3.normalize(Cartesian3.cross(imageRight, sightline, new Cartesian3()), new Cartesian3())
+    const sourceImage = new Image()
+    sourceImage.onload = () => {
+      if (cancelled || mapViewer.isDestroyed()) return
+      const canvas = document.createElement('canvas')
+      canvas.width = sourceImage.naturalHeight
+      canvas.height = sourceImage.naturalWidth
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.translate(canvas.width, 0)
+      context.rotate(Math.PI / 2)
+      context.drawImage(sourceImage, 0, 0)
+      const halfWidth = 18
+      const halfLength = halfWidth * canvas.height / canvas.width
+      const imageCorners = [[-halfWidth, -halfLength], [halfWidth, -halfLength], [halfWidth, halfLength], [-halfWidth, halfLength]].map(([right, forward]) => {
+        const rightOffset = Cartesian3.multiplyByScalar(imageRight, right!, new Cartesian3())
+        const upOffset = Cartesian3.multiplyByScalar(imageUp, forward!, new Cartesian3())
+        return Cartesian3.add(center, Cartesian3.add(rightOffset, upOffset, new Cartesian3()), new Cartesian3())
+      })
+      imageProjectionEntity.current = mapViewer.entities.add({
+        polygon: {
+          hierarchy: new PolygonHierarchy(imageCorners),
+          perPositionHeight: true,
+          material: new ImageMaterialProperty({ image: canvas, color: Color.WHITE.withAlpha(0.25), transparent: true }),
+          outline: false,
+        },
+      })
+    }
+    sourceImage.src = imageUrl
+    return () => {
+      cancelled = true
+      if (imageProjectionEntity.current && !mapViewer.isDestroyed()) mapViewer.entities.remove(imageProjectionEntity.current)
+      imageProjectionEntity.current = null
+    }
   }, [selectedSceneId, layers, sceneDraft])
 
   const addLayer = async (file: File) => {
@@ -294,6 +334,7 @@ export default function App() {
   const addGoogleTiles = async () => {
     const mapViewer = viewer.current
     if (!mapViewer) return
+    if (googleTilesLoading.current) return
     if (!import.meta.env.VITE_CESIUM_ION_TOKEN) {
       setError('Set VITE_CESIUM_ION_TOKEN in .env to stream Google Photorealistic 3D Tiles.')
       return
@@ -302,9 +343,11 @@ export default function App() {
       setError('Google Photorealistic 3D Tiles are already in the scene.')
       return
     }
+    googleTilesLoading.current = true
     setError('')
     try {
       const tileset = await Cesium3DTileset.fromIonAssetId(2275207)
+      if (viewer.current !== mapViewer || mapViewer.isDestroyed()) { tileset.destroy(); return }
       googleTileset.current = tileset
       googleOriginalStyle.current = tileset.style
       if (sceneDraft) tileset.style = new Cesium3DTileStyle({ color: "color('white', 0.8)" })
@@ -320,8 +363,16 @@ export default function App() {
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message.replace(/access_token=[^&\s]+/gi, 'access_token=REDACTED').replace(/Bearer\s+[^&\s]+/gi, 'Bearer REDACTED') : ''
       setError(`Could not load Google Photorealistic 3D Tiles. ${detail.slice(0, 180) || 'Check the ion token and asset access.'}`)
+    } finally {
+      googleTilesLoading.current = false
     }
   }
+
+  useEffect(() => {
+    if (!import.meta.env.VITE_CESIUM_ION_TOKEN) return
+    const timeout = window.setTimeout(() => { void addGoogleTiles() }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [])
 
   const beginScenePoint = () => {
     const previousImage = layersRef.current.find((layer) => layer.id === editingSceneId)?.scene?.imageUrl
@@ -456,14 +507,14 @@ export default function App() {
       <div className="topbar-right"><span className="runtime-pill"><span className="pulse" />LOCAL RUNTIME</span><button className="icon-button" title="Settings"><Settings2 size={17} /></button><div className="avatar">S</div></div>
     </header>
     <div className="workspace">
-      <aside className="sidebar">
-        <div className="side-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Map studio</h1></div><button className="icon-button subtle" title="Workspace help"><CircleHelp size={16} /></button></div>
+      <aside className={`sidebar ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
+        <div className="side-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Map studio</h1></div><button className="icon-button sidebar-collapse-button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>{sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}</button><button className="icon-button subtle" title="Workspace help"><CircleHelp size={16} /></button></div>
         <section className="side-section">
           <div className="section-head"><span className="eyebrow">LAYERS <span className="count">{layers.length}</span></span><button className="mini-button" onClick={() => document.getElementById('file-upload')?.click()} title="Add layer"><Plus size={15} /></button></div>
           <input id="file-upload" type="file" accept=".kmz,.kml,.geojson,.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void addLayer(file); event.currentTarget.value = '' }} />
           <button className="upload-card" onClick={() => document.getElementById('file-upload')?.click()}><span className="upload-icon"><FileUp size={16} /></span><span><b>Import map data</b><small>KMZ, KML, GeoJSON</small></span><Plus className="upload-plus" size={15} /></button>
           <button className="upload-card tiles-card" onClick={() => setShowTilesInput((value) => !value)}><span className="upload-icon terrain-icon"><Layers3 size={16} /></span><span><b>3D scene data</b><small>Google 3D or custom tiles</small></span><Plus className="upload-plus" size={15} /></button>
-          {showTilesInput && <div className="tiles-form"><button className="google-tiles-button" onClick={() => void addGoogleTiles()}><span className="google-g">G</span><span>Stream Google 3D area<small>Cesium ion · asset 2275207</small></span><Plus size={14} /></button><div className="inline-form"><input value={tilesetUrl} onChange={(event) => setTilesetUrl(event.target.value)} placeholder="Custom tileset.json URL" /><button onClick={() => void addTileset()}>Add</button></div></div>}
+          {showTilesInput && <div className="tiles-form">{!layers.some((layer) => layer.kind === 'Google Photorealistic') && <button className="google-tiles-button" onClick={() => void addGoogleTiles()}><span className="google-g">G</span><span>Stream Google 3D area<small>Cesium ion · asset 2275207</small></span><Plus size={14} /></button>}<div className="inline-form"><input value={tilesetUrl} onChange={(event) => setTilesetUrl(event.target.value)} placeholder="Custom tileset.json URL" /><button onClick={() => void addTileset()}>Add</button></div></div>}
           {layers.length > 0 && <div className="layer-list">{layers.map((layer) => <div className={`layer-row ${selectedSceneId === layer.id ? 'is-selected' : ''}`} key={layer.id}><button className={`visibility ${layer.visible ? 'is-on' : ''}`} onClick={() => toggleLayer(layer)} aria-label={`Toggle ${layer.name}`} /><span className="layer-symbol"><MapPin size={14} /></span><button className="layer-name" onClick={() => layer.scene && setSelectedSceneId(layer.id)}>{layer.name}<small>{layer.kind}</small></button><button className="icon-button tiny" onClick={() => { if (layer.source instanceof GeoJsonDataSource || layer.source instanceof KmlDataSource) viewer.current?.dataSources.remove(layer.source, true); if (layer.source instanceof Cesium3DTileset) viewer.current?.scene.primitives.remove(layer.source); if (layer.source instanceof Entity) viewer.current?.entities.remove(layer.source); layer.auxEntities?.forEach((entity) => viewer.current?.entities.remove(entity)); if (layer.kind === 'Google Photorealistic' && viewer.current) viewer.current.scene.globe.show = true; if (layer.scene?.imageUrl) URL.revokeObjectURL(layer.scene.imageUrl); if (selectedSceneId === layer.id) setSelectedSceneId(null); setLayers((previous) => previous.filter((item) => item.id !== layer.id)) }} aria-label={`Remove ${layer.name}`}><X size={14} /></button></div>)}</div>}
           {layers.length === 0 && <div className="empty-layers">No layers yet.<br />Import data or ask the agent to create some.</div>}
           <button className="scene-create-button" onClick={beginScenePoint}><Plus size={15} /><span>Add scene point</span><small>Point · heading · image</small></button>

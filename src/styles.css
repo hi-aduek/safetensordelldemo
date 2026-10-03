@@ -11,3 +11,5 @@
 .scene-fields{grid-template-columns:repeat(3,minmax(0,1fr))}.aoi-pick-button:disabled{opacity:.45;cursor:default}
 
 .scene-edit-button{display:flex;align-items:center;gap:4px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;background:#232c25;color:#b8c8ae;font-size:8px}.scene-edit-button:hover{border-color:#849d5b;color:#edf4e8}
+
+.sidebar{transition:width .18s ease}.sidebar-collapse-button{flex:none}.sidebar.is-collapsed{width:48px;padding:14px 7px;overflow:hidden}.sidebar.is-collapsed .side-section,.sidebar.is-collapsed .sidebar-spacer,.sidebar.is-collapsed .runtime-card,.sidebar.is-collapsed .sidebar-footer,.sidebar.is-collapsed .side-heading>div,.sidebar.is-collapsed .side-heading .subtle{display:none}.sidebar.is-collapsed .side-heading{justify-content:center;padding:0}.sidebar.is-collapsed .sidebar-collapse-button{color:var(--lime)}
