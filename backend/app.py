@@ -89,7 +89,7 @@ async def propose(request: ProposeRequest) -> dict[str, Any]:
             detail="Configure LOCAL_LLM_MODEL and point LOCAL_LLM_BASE_URL at your local OpenAI-compatible model server.",
         )
 
-    system = """You are a geospatial map assistant. Return only a JSON object with exactly these keys: summary and geojson. geojson must be a valid GeoJSON FeatureCollection. Coordinates must be [longitude, latitude] in WGS84 degrees. Make useful, clearly named map features based on the user's request. When the request does not specify a location, choose a plausible location near Denver, Colorado (39.7392, -104.9903). Use concise feature properties with a name and description. Never claim you inspected source data that was not included in the context. Limit output to 30 features."""
+    system = """You are a geospatial map assistant. Return only a JSON object with exactly these keys: summary and geojson. geojson must be a valid GeoJSON FeatureCollection. Coordinates must be [longitude, latitude] in WGS84 degrees. Make useful, clearly named map features based on the user's request. When the request does not specify a location, choose a plausible location near Hult International Business School in Cambridge, Massachusetts (42.370061, -71.07065). Use concise feature properties with a name and description. Never claim you inspected source data that was not included in the context. Limit output to 30 features."""
     context = {
         "user_request": request.prompt,
         "existing_layers": [layer.model_dump() for layer in request.layers],

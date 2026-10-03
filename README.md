@@ -39,6 +39,7 @@ Open the Vite URL shown in the terminal. The agent API is available at `http://l
 - Use **3D scene data → Stream Google 3D area** to load Google Photorealistic 3D Tiles from Cesium ion asset `2275207`; this requires `VITE_CESIUM_ION_TOKEN`. The provider is Google's photogrammetric mesh, not OSM building geometry.
 - Paste a `tileset.json` URL under **3D scene data** to load another accessible 3D Tiles tileset.
 - Set `VITE_CESIUM_ION_TOKEN` in the Vite environment to enable Cesium ion content and World Terrain. A token is not needed to view local GeoJSON/KML data.
+- Use **Add scene point** below the layer list to pick a point on the map, set altitude and compass heading, attach a local image, and add situation notes. Scene points and image previews remain in browser memory for the current session.
 
 ## Agent boundary
 
