@@ -1,15 +1,33 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArcType, Viewer, createWorldTerrainAsync, Cartesian2, Cartesian3, Cartographic, Color, ConstantPositionProperty, ConstantProperty, Entity, GeoJsonDataSource, HeightReference, HorizontalOrigin, ImageMaterialProperty, KmlDataSource, Cesium3DTileset, Cesium3DTileStyle, Ion, LabelStyle, Math as CesiumMath, Matrix4, PolygonHierarchy, PolylineArrowMaterialProperty, ScreenSpaceEventHandler, ScreenSpaceEventType, Transforms, VerticalOrigin } from 'cesium'
-import { Activity, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Compass, FileUp, ImagePlus, Layers3, MapPin, Pencil, Plus, Send, Settings2, Sparkles, X } from 'lucide-react'
+import { Activity, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleHelp, Compass, FileUp, ImagePlus, Layers3, MapPin, Pause, Pencil, Play, Plus, Route as RouteIcon, Send, Settings2, Sparkles, X } from 'lucide-react'
 
 type FeatureCollection = { type: 'FeatureCollection'; features: Array<{ type: 'Feature'; geometry: { type: string; coordinates: unknown }; properties: Record<string, unknown> }> }
 type Proposal = { summary: string; geojson: FeatureCollection }
 type AreaOfInterest = { longitude: number; latitude: number; groundAltitude: number }
 type SceneDetails = { longitude: number; latitude: number; altitude: number; groundAltitude: number; heading: number; pitch: number; notes: string; imageUrl?: string; imageName?: string; areaOfInterest?: AreaOfInterest }
-type Layer = { id: string; name: string; kind: string; visible: boolean; source?: unknown; auxEntities?: Entity[]; scene?: SceneDetails }
+type RoutePoint = { longitude: number; latitude: number; altitude: number }
+type RouteMode = 'drive' | 'walk'
+type ActorType = 'emt' | 'firefighter' | 'police'
+type RouteDetails = { points: RoutePoint[]; legModes: RouteMode[]; actorType: ActorType }
+type RouteDraft = RouteDetails & { name: string; nextMode: RouteMode }
+type Layer = { id: string; name: string; kind: string; visible: boolean; source?: unknown; auxEntities?: Entity[]; scene?: SceneDetails; route?: RouteDetails }
 type SceneDraft = { name: string; longitude?: number; latitude?: number; altitude: number; groundAltitude?: number; heading: number; pitch: number; notes: string; imageUrl?: string; imageName?: string; areaOfInterest?: AreaOfInterest }
 
 const GROUND_VISUAL_OFFSET_METERS = -20
+const EMT_VEHICLE_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#17221d" stroke="#c6f36a" stroke-width="2"/><path d="M8 17h21v16H8zM29 22h7l5 6v5H29z" fill="#f4f5ec"/><path d="M13 20h11v8H13z" fill="#87b5c5"/><path d="M32 24h3l3 4h-6z" fill="#87b5c5"/><path d="M20 21v6m-3-3h6" stroke="#d95748" stroke-width="2.5"/><circle cx="15" cy="34" r="3" fill="#222"/><circle cx="35" cy="34" r="3" fill="#222"/></svg>')}`
+const EMT_WALKER_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#17221d" stroke="#c6f36a" stroke-width="2"/><circle cx="25" cy="12" r="4" fill="#f4f5ec"/><path d="m21 19 8 3 4 7m-12-8-5 8m13-7-3 8 6 7m-9-7-7 7" fill="none" stroke="#f4f5ec" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}`
+const actorLabel = (type: ActorType) => type === 'firefighter' ? 'Firefighter' : type === 'police' ? 'Police' : 'EMT'
+const routeActorIcon = (type: ActorType, mode: RouteMode) => {
+  if (type === 'emt') return mode === 'drive' ? EMT_VEHICLE_ICON : EMT_WALKER_ICON
+  const fire = type === 'firefighter'
+  const accent = fire ? '#ef604d' : '#5ca9f2'
+  const mark = fire ? 'FD' : 'PD'
+  const svg = mode === 'drive'
+    ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#17221d" stroke="${accent}" stroke-width="2"/><path d="M7 19h25v14H7zM32 23h6l4 5v5H32z" fill="#f4f5ec"/><path d="M11 21h9v7h-9zM22 21h7v7h-7z" fill="#87b5c5"/><path d="M10 17h23" stroke="${accent}" stroke-width="3"/><text x="24" y="32" text-anchor="middle" font-family="sans-serif" font-size="6" font-weight="bold" fill="${accent}">${mark}</text><circle cx="14" cy="35" r="3" fill="#222"/><circle cx="36" cy="35" r="3" fill="#222"/></svg>`
+    : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#17221d" stroke="${accent}" stroke-width="2"/><path d="M18 15q7-8 14 0z" fill="${accent}"/><circle cx="25" cy="18" r="4" fill="#f4f5ec"/><path d="m21 23 8 2 3 8m-11-8-5 7m13-6-3 8 6 5m-10-5-7 5" fill="none" stroke="${accent}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><text x="12" y="13" font-family="sans-serif" font-size="6" font-weight="bold" fill="${accent}">${mark}</text></svg>`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+}
 
 const sceneArrowEnd = (scene: Pick<SceneDetails, 'longitude' | 'latitude' | 'altitude' | 'groundAltitude' | 'heading' | 'pitch'>) => {
   const radians = CesiumMath.toRadians(scene.heading)
@@ -47,7 +65,12 @@ export default function App() {
   const googleTilesLoading = useRef(false)
   const googleOriginalStyle = useRef<Cesium3DTileStyle | undefined>(undefined)
   const [layers, setLayers] = useState<Layer[]>([])
+  const [routeDraft, setRouteDraft] = useState<RouteDraft | null>(null)
+  const [routePickMode, setRoutePickMode] = useState(false)
+  const [playingRouteIds, setPlayingRouteIds] = useState<string[]>([])
+  const routePlaybackTimers = useRef(new Map<string, number>())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [assistantCollapsed, setAssistantCollapsed] = useState(false)
   const layersRef = useRef<Layer[]>([])
   layersRef.current = layers
   const [prompt, setPrompt] = useState('')
@@ -61,6 +84,8 @@ export default function App() {
   const [sceneDraft, setSceneDraft] = useState<SceneDraft | null>(null)
   const sceneDraftRef = useRef<SceneDraft | null>(null)
   sceneDraftRef.current = sceneDraft
+  const routeDraftRef = useRef<RouteDraft | null>(null)
+  routeDraftRef.current = routeDraft
   const [pickMode, setPickMode] = useState(false)
   const [aoiPickMode, setAoiPickMode] = useState(false)
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
@@ -68,12 +93,15 @@ export default function App() {
   const [sceneError, setSceneError] = useState('')
   const pickModeRef = useRef(false)
   const aoiPickModeRef = useRef(false)
+  const routePickModeRef = useRef(false)
   const draftEntity = useRef<Entity | null>(null)
   const draftAltitudeEntities = useRef<Entity[]>([])
+  const routeDraftEntities = useRef<Entity[]>([])
   const imageProjectionEntity = useRef<Entity | null>(null)
   const altitudeDrag = useRef<{ id: string; entity: Entity; startY: number; startAltitude: number } | null>(null)
   pickModeRef.current = pickMode
   aoiPickModeRef.current = aoiPickMode
+  routePickModeRef.current = routePickMode
 
   useEffect(() => {
     let active = true
@@ -93,6 +121,16 @@ export default function App() {
     }
     const clickHandler = new ScreenSpaceEventHandler(mapViewer.scene.canvas)
     clickHandler.setInputAction((event: { position: Cartesian2 }) => {
+      if (routePickModeRef.current) {
+        const position = mapViewer.scene.pickPosition(event.position) ?? mapViewer.camera.pickEllipsoid(event.position, mapViewer.scene.globe.ellipsoid)
+        const draft = routeDraftRef.current
+        if (position && draft) {
+          const cartographic = Cartographic.fromCartesian(position)
+          const point = { longitude: CesiumMath.toDegrees(cartographic.longitude), latitude: CesiumMath.toDegrees(cartographic.latitude), altitude: cartographic.height }
+          setRouteDraft((current) => current ? { ...current, points: [...current.points, point], legModes: current.points.length ? [...current.legModes, current.nextMode] : current.legModes } : current)
+        }
+        return
+      }
       if (aoiPickModeRef.current) {
           const target = mapViewer.scene.pickPosition(event.position) ?? mapViewer.camera.pickEllipsoid(event.position, mapViewer.scene.globe.ellipsoid)
         const draft = sceneDraftRef.current
@@ -124,6 +162,8 @@ export default function App() {
       if (picked instanceof Entity) {
         const id = picked.properties?.scenePointId?.getValue(mapViewer.clock.currentTime)
         if (typeof id === 'string') setSelectedSceneId(id)
+        const routeId = picked.properties?.routeId?.getValue(mapViewer.clock.currentTime)
+        if (typeof routeId === 'string') setSelectedSceneId(routeId)
       }
     }, ScreenSpaceEventType.LEFT_CLICK)
     clickHandler.setInputAction((event: { position: Cartesian2 }) => {
@@ -209,9 +249,10 @@ export default function App() {
     if (!layer?.scene || typeof imageUrl !== 'string') return () => { cancelled = true }
     const scene = layer.scene
     const target = scene.areaOfInterest ?? { longitude: scene.longitude, latitude: scene.latitude, groundAltitude: scene.groundAltitude }
-    const center = Cartesian3.fromDegrees(target.longitude, target.latitude, target.groundAltitude + 1)
-    const enu = Transforms.eastNorthUpToFixedFrame(center)
+    const targetCenter = Cartesian3.fromDegrees(target.longitude, target.latitude, target.groundAltitude + 1)
     const observer = Cartesian3.fromDegrees(scene.longitude, scene.latitude, scene.groundAltitude + scene.altitude)
+    const center = scene.areaOfInterest ? Cartesian3.lerp(observer, targetCenter, 0.75, new Cartesian3()) : targetCenter
+    const enu = Transforms.eastNorthUpToFixedFrame(center)
     let sightline: Cartesian3
     if (scene.areaOfInterest) {
       sightline = Cartesian3.normalize(Cartesian3.subtract(center, observer, new Cartesian3()), new Cartesian3())
@@ -255,7 +296,7 @@ export default function App() {
         polygon: {
           hierarchy: new PolygonHierarchy(imageCorners),
           perPositionHeight: true,
-          material: new ImageMaterialProperty({ image: canvas, color: Color.WHITE.withAlpha(0.25), transparent: true }),
+          material: new ImageMaterialProperty({ image: canvas, color: Color.WHITE.withAlpha(0.5), transparent: true }),
           outline: false,
         },
       })
@@ -425,6 +466,122 @@ export default function App() {
     if (googleTileset.current) googleTileset.current.style = new Cesium3DTileStyle({ color: "color('white', 0.8)" })
   }
 
+  const beginRoutePlan = () => {
+    if (sceneDraft) cancelSceneDraft()
+    setSelectedSceneId(null)
+    setRouteDraft({ name: 'EMT response', actorType: 'emt', points: [], legModes: [], nextMode: 'drive' })
+    setRoutePickMode(true)
+  }
+
+  const saveRoute = () => {
+    const mapViewer = viewer.current
+    if (!mapViewer || !routeDraft || routeDraft.points.length < 2) return
+    const id = crypto.randomUUID()
+    const route = { points: routeDraft.points, legModes: routeDraft.legModes, actorType: routeDraft.actorType }
+    const routeEntities = route.legModes.map((mode, index) => mapViewer.entities.add({
+      polyline: {
+        positions: route.points.slice(index, index + 2).map((point) => Cartesian3.fromDegrees(point.longitude, point.latitude, point.altitude)),
+        width: mode === 'drive' ? 5 : 4,
+        material: Color.fromCssColorString(mode === 'drive' ? '#58c8e8' : '#c6f36a').withAlpha(0.9),
+        arcType: ArcType.GEODESIC,
+        clampToGround: true,
+      },
+    }))
+    const actor = mapViewer.entities.add({
+      position: Cartesian3.fromDegrees(route.points[0].longitude, route.points[0].latitude, route.points[0].altitude + 2),
+      billboard: { image: routeActorIcon(route.actorType, route.legModes[0] || 'drive'), width: 40, height: 40, verticalOrigin: VerticalOrigin.CENTER },
+      properties: { routeId: id, actorType: route.actorType },
+    })
+    setLayers((previous) => [...previous, { id, name: routeDraft.name.trim() || `${actorLabel(route.actorType)} response`, kind: 'Route', visible: true, source: actor, auxEntities: routeEntities, route }])
+    setSelectedSceneId(id)
+    setRouteDraft(null)
+    setRoutePickMode(false)
+    setStatus('Route ready to simulate')
+  }
+
+  useEffect(() => {
+    const mapViewer = viewer.current
+    if (!mapViewer) return
+    routeDraftEntities.current.forEach((entity) => mapViewer.entities.remove(entity))
+    routeDraftEntities.current = []
+    if (!routeDraft) return
+    routeDraft.points.forEach((point, index) => {
+      routeDraftEntities.current.push(mapViewer.entities.add({
+        position: Cartesian3.fromDegrees(point.longitude, point.latitude, point.altitude + 2),
+        point: { pixelSize: index === 0 ? 10 : 8, color: index === 0 ? Color.fromCssColorString('#58c8e8') : Color.WHITE, outlineColor: Color.fromCssColorString('#172019'), outlineWidth: 2 },
+      }))
+    })
+    routeDraft.legModes.forEach((mode, index) => {
+      routeDraftEntities.current.push(mapViewer.entities.add({
+        polyline: {
+          positions: routeDraft.points.slice(index, index + 2).map((point) => Cartesian3.fromDegrees(point.longitude, point.latitude, point.altitude)),
+          width: mode === 'drive' ? 5 : 4,
+          material: Color.fromCssColorString(mode === 'drive' ? '#58c8e8' : '#c6f36a').withAlpha(0.9),
+          arcType: ArcType.GEODESIC,
+          clampToGround: true,
+        },
+      }))
+    })
+  }, [routeDraft])
+
+  const toggleRoutePlayback = (routeId: string) => {
+    const activeTimer = routePlaybackTimers.current.get(routeId)
+    if (activeTimer !== undefined) {
+      window.clearInterval(activeTimer)
+      routePlaybackTimers.current.delete(routeId)
+      setPlayingRouteIds((current) => current.filter((id) => id !== routeId))
+      return
+    }
+    const layer = layersRef.current.find((item) => item.id === routeId && item.route)
+    if (!layer?.route || !(layer.source instanceof Entity)) return
+    const { points, legModes, actorType } = layer.route
+    if (points.length < 2) return
+    const actor = layer.source
+    actor.position = new ConstantPositionProperty(Cartesian3.fromDegrees(points[0].longitude, points[0].latitude, points[0].altitude + 2))
+    if (actor.billboard) actor.billboard.image = new ConstantProperty(routeActorIcon(actorType, legModes[0] || 'drive'))
+    const legDurations = legModes.map((mode, index) => {
+      const start = points[index]
+      const end = points[index + 1]
+      const startPosition = Cartesian3.fromDegrees(start.longitude, start.latitude, start.altitude)
+      const endPosition = Cartesian3.fromDegrees(end.longitude, end.latitude, end.altitude)
+      return Math.max(1200, Cartesian3.distance(startPosition, endPosition) / (mode === 'drive' ? 13 : 1.4) * 1000)
+    })
+    const totalDuration = legDurations.reduce((sum, duration) => sum + duration, 0)
+    let elapsed = 0
+    const timer = window.setInterval(() => {
+      elapsed += 50
+      if (elapsed >= totalDuration) {
+        const last = points[points.length - 1]
+        actor.position = new ConstantPositionProperty(Cartesian3.fromDegrees(last.longitude, last.latitude, last.altitude + 2))
+        window.clearInterval(timer)
+        routePlaybackTimers.current.delete(routeId)
+        setPlayingRouteIds((current) => current.filter((id) => id !== routeId))
+        return
+      }
+      let remaining = elapsed
+      let index = 0
+      while (index < legDurations.length - 1 && remaining >= legDurations[index]) { remaining -= legDurations[index]; index += 1 }
+      const start = points[index]
+      const end = points[index + 1]
+      const fraction = Math.min(1, remaining / legDurations[index])
+      let longitudeDelta = end.longitude - start.longitude
+      if (longitudeDelta > 180) longitudeDelta -= 360
+      if (longitudeDelta < -180) longitudeDelta += 360
+      const longitude = start.longitude + longitudeDelta * fraction
+      const latitude = start.latitude + (end.latitude - start.latitude) * fraction
+      const altitude = start.altitude + (end.altitude - start.altitude) * fraction + 2
+      actor.position = new ConstantPositionProperty(Cartesian3.fromDegrees(longitude, latitude, altitude))
+      if (actor.billboard) actor.billboard.image = new ConstantProperty(routeActorIcon(actorType, legModes[index]))
+    }, 50)
+    routePlaybackTimers.current.set(routeId, timer)
+    setPlayingRouteIds((current) => [...current, routeId])
+  }
+
+  useEffect(() => () => {
+    routePlaybackTimers.current.forEach((timer) => window.clearInterval(timer))
+    routePlaybackTimers.current.clear()
+  }, [])
+
   const addScenePoint = () => {
     const mapViewer = viewer.current
     if (!mapViewer || !sceneDraft || sceneDraft.longitude === undefined || sceneDraft.latitude === undefined) {
@@ -502,7 +659,7 @@ export default function App() {
 
   return <main className="app-shell">
     <header className="topbar">
-      <a className="brand" href="#"><span className="brand-mark"><Layers3 size={19} /></span><span>FIELDVIEW<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#"><span className="brand-mark"><Layers3 size={19} /></span><span>SafeTensor<span className="brand-dot">.</span></span></a>
       <div className="project-switch"><span className="project-glyph">H</span><span>Hult · Cambridge</span><ChevronDown size={14} /></div>
       <div className="topbar-right"><span className="runtime-pill"><span className="pulse" />LOCAL RUNTIME</span><button className="icon-button" title="Settings"><Settings2 size={17} /></button><div className="avatar">S</div></div>
     </header>
@@ -515,10 +672,20 @@ export default function App() {
           <button className="upload-card" onClick={() => document.getElementById('file-upload')?.click()}><span className="upload-icon"><FileUp size={16} /></span><span><b>Import map data</b><small>KMZ, KML, GeoJSON</small></span><Plus className="upload-plus" size={15} /></button>
           <button className="upload-card tiles-card" onClick={() => setShowTilesInput((value) => !value)}><span className="upload-icon terrain-icon"><Layers3 size={16} /></span><span><b>3D scene data</b><small>Google 3D or custom tiles</small></span><Plus className="upload-plus" size={15} /></button>
           {showTilesInput && <div className="tiles-form">{!layers.some((layer) => layer.kind === 'Google Photorealistic') && <button className="google-tiles-button" onClick={() => void addGoogleTiles()}><span className="google-g">G</span><span>Stream Google 3D area<small>Cesium ion · asset 2275207</small></span><Plus size={14} /></button>}<div className="inline-form"><input value={tilesetUrl} onChange={(event) => setTilesetUrl(event.target.value)} placeholder="Custom tileset.json URL" /><button onClick={() => void addTileset()}>Add</button></div></div>}
-          {layers.length > 0 && <div className="layer-list">{layers.map((layer) => <div className={`layer-row ${selectedSceneId === layer.id ? 'is-selected' : ''}`} key={layer.id}><button className={`visibility ${layer.visible ? 'is-on' : ''}`} onClick={() => toggleLayer(layer)} aria-label={`Toggle ${layer.name}`} /><span className="layer-symbol"><MapPin size={14} /></span><button className="layer-name" onClick={() => layer.scene && setSelectedSceneId(layer.id)}>{layer.name}<small>{layer.kind}</small></button><button className="icon-button tiny" onClick={() => { if (layer.source instanceof GeoJsonDataSource || layer.source instanceof KmlDataSource) viewer.current?.dataSources.remove(layer.source, true); if (layer.source instanceof Cesium3DTileset) viewer.current?.scene.primitives.remove(layer.source); if (layer.source instanceof Entity) viewer.current?.entities.remove(layer.source); layer.auxEntities?.forEach((entity) => viewer.current?.entities.remove(entity)); if (layer.kind === 'Google Photorealistic' && viewer.current) viewer.current.scene.globe.show = true; if (layer.scene?.imageUrl) URL.revokeObjectURL(layer.scene.imageUrl); if (selectedSceneId === layer.id) setSelectedSceneId(null); setLayers((previous) => previous.filter((item) => item.id !== layer.id)) }} aria-label={`Remove ${layer.name}`}><X size={14} /></button></div>)}</div>}
+          {layers.length > 0 && <div className="layer-list">{layers.map((layer) => <div className={`layer-row ${selectedSceneId === layer.id ? 'is-selected' : ''}`} key={layer.id}><button className={`visibility ${layer.visible ? 'is-on' : ''}`} onClick={() => toggleLayer(layer)} aria-label={`Toggle ${layer.name}`} /><span className="layer-symbol"><MapPin size={14} /></span><button className="layer-name" onClick={() => (layer.scene || layer.route) && setSelectedSceneId(layer.id)}>{layer.name}<small>{layer.kind}</small></button><button className="icon-button tiny" onClick={() => { const timer = routePlaybackTimers.current.get(layer.id); if (timer !== undefined) window.clearInterval(timer); routePlaybackTimers.current.delete(layer.id); setPlayingRouteIds((current) => current.filter((id) => id !== layer.id)); if (layer.source instanceof GeoJsonDataSource || layer.source instanceof KmlDataSource) viewer.current?.dataSources.remove(layer.source, true); if (layer.source instanceof Cesium3DTileset) viewer.current?.scene.primitives.remove(layer.source); if (layer.source instanceof Entity) viewer.current?.entities.remove(layer.source); layer.auxEntities?.forEach((entity) => viewer.current?.entities.remove(entity)); if (layer.kind === 'Google Photorealistic' && viewer.current) viewer.current.scene.globe.show = true; if (layer.scene?.imageUrl) URL.revokeObjectURL(layer.scene.imageUrl); if (selectedSceneId === layer.id) setSelectedSceneId(null); setLayers((previous) => previous.filter((item) => item.id !== layer.id)) }} aria-label={`Remove ${layer.name}`}><X size={14} /></button></div>)}</div>}
           {layers.length === 0 && <div className="empty-layers">No layers yet.<br />Import data or ask the agent to create some.</div>}
           <button className="scene-create-button" onClick={beginScenePoint}><Plus size={15} /><span>Add scene point</span><small>Point · heading · image</small></button>
-          {(pickMode || aoiPickMode) && <div className="pick-banner"><MapPin size={14} /> {aoiPickMode ? 'Click the area of interest on the map' : 'Click the map to set the observer'}<button onClick={() => { setPickMode(false); setAoiPickMode(false) }}>Cancel</button></div>}
+          <button className="scene-create-button route-create-button" onClick={beginRoutePlan}><RouteIcon size={15} /><span>Plan route</span><small>Drive · walk · actor</small></button>
+          {(pickMode || aoiPickMode || routePickMode) && <div className="pick-banner"><MapPin size={14} /> {routePickMode ? 'Click the map to add route waypoints' : aoiPickMode ? 'Click the area of interest on the map' : 'Click the map to set the observer'}<button onClick={() => { setPickMode(false); setAoiPickMode(false); setRoutePickMode(false) }}>Done</button></div>}
+          {routeDraft && <div className="scene-editor route-editor">
+            <div className="scene-editor-title"><span className="scene-editor-icon"><RouteIcon size={15} /></span><span><b>Plan responder route</b><small>{routeDraft.points.length} waypoint{routeDraft.points.length === 1 ? '' : 's'}</small></span><button className="icon-button tiny" onClick={() => { setRouteDraft(null); setRoutePickMode(false) }} aria-label="Cancel route"><X size={14} /></button></div>
+            <div className="route-mode-label">Actor</div><div className="route-actor-switch">{(['emt', 'firefighter', 'police'] as ActorType[]).map((type) => <button key={type} className={routeDraft.actorType === type ? 'is-active' : ''} onClick={() => setRouteDraft((current) => current ? { ...current, actorType: type, name: current.name === `${actorLabel(current.actorType)} response` ? `${actorLabel(type)} response` : current.name } : current)}>{actorLabel(type)}</button>)}</div>
+            <label className="scene-label">Route name<input value={routeDraft.name} maxLength={80} onChange={(event) => setRouteDraft({ ...routeDraft, name: event.target.value })} /></label>
+            <div className="route-mode-label">Next leg mode</div><div className="route-mode-switch"><button className={routeDraft.nextMode === 'drive' ? 'is-active' : ''} onClick={() => setRouteDraft({ ...routeDraft, nextMode: 'drive' })}>Drive</button><button className={routeDraft.nextMode === 'walk' ? 'is-active' : ''} onClick={() => setRouteDraft({ ...routeDraft, nextMode: 'walk' })}>Walk</button></div>
+            <div className="route-waypoints">{routeDraft.points.map((point, index) => <div key={`${point.longitude}-${point.latitude}-${index}`}><span>{index === 0 ? 'START' : routeDraft.legModes[index - 1] === 'drive' ? 'DRIVE' : 'WALK'}</span><small>{point.latitude.toFixed(5)}°, {point.longitude.toFixed(5)}°</small></div>)}</div>
+            <button className="pick-location-button" onClick={() => setRoutePickMode((picking) => !picking)}><MapPin size={14} />{routePickMode ? 'Stop adding waypoints' : 'Add waypoints on map'}<span>{routePickMode ? 'Active' : 'Pick'}</span></button>
+            <button className="save-scene-button" disabled={routeDraft.points.length < 2} onClick={saveRoute}><Check size={14} /> Save route</button>
+          </div>}
           {sceneDraft && <div className="scene-editor">
             <div className="scene-editor-title"><span className="scene-editor-icon"><Compass size={15} /></span><span><b>{editingSceneId ? 'Edit observer point' : 'New observer point'}</b><small>{sceneDraft.longitude === undefined ? 'Choose observer location' : 'Observer location selected'}</small></span><button className="icon-button tiny" onClick={cancelSceneDraft} aria-label="Cancel scene point"><X size={14} /></button></div>
             <button className={`pick-location-button ${sceneDraft.longitude !== undefined ? 'has-location' : ''}`} onClick={() => { setAoiPickMode(false); setPickMode(true) }}><MapPin size={14} />{sceneDraft.longitude === undefined ? 'Click map to place observer' : `${sceneDraft.latitude?.toFixed(5)}°, ${sceneDraft.longitude?.toFixed(5)}°`}<span>{sceneDraft.longitude !== undefined ? 'Change' : 'Pick'}</span></button>
@@ -539,22 +706,30 @@ export default function App() {
             <button className="save-scene-button" disabled={sceneDraft.longitude === undefined} onClick={addScenePoint}><Check size={14} /> {editingSceneId ? 'Save changes' : 'Add scene point'}</button>
             <small className="session-note">Saved in this browser session only.</small>
           </div>}
-          {selectedSceneId && (() => { const selected = layers.find((layer) => layer.id === selectedSceneId && layer.scene); if (!selected?.scene) return null; return <div className="scene-detail-card"><div className="scene-detail-heading"><b>{selected.name}</b><button className="scene-edit-button" onClick={() => beginSceneEdit(selected)}><Pencil size={12} />Edit</button><button className="icon-button tiny" onClick={() => setSelectedSceneId(null)} aria-label="Close scene details"><X size={14} /></button></div><div className="scene-detail-coords">{selected.scene.latitude.toFixed(5)}°, {selected.scene.longitude.toFixed(5)}°</div><div className="scene-detail-stats"><span>ALT AGL <b>{selected.scene.altitude} m</b></span><span>HDG <b>{String(selected.scene.heading).padStart(3, '0')}°</b></span><span>PITCH <b>{String(selected.scene.pitch).padStart(2, '0')}°</b></span></div><small className="scene-drag-hint">Drag map point vertically to change altitude</small>{selected.scene.imageUrl && <img className="scene-detail-image" src={selected.scene.imageUrl} alt={selected.scene.imageName || 'Scene attachment'} />}{selected.scene.imageName && <small className="scene-image-name">{selected.scene.imageName}</small>}{selected.scene.notes && <p className="scene-detail-notes">{selected.scene.notes}</p>}</div> })()}
+          {selectedSceneId && (() => {
+            const selected = layers.find((layer) => layer.id === selectedSceneId)
+            if (!selected) return null
+            if (selected.route) return <div className="scene-detail-card route-detail-card"><div className="scene-detail-heading"><b>{selected.name}</b><button className="icon-button tiny" onClick={() => setSelectedSceneId(null)} aria-label="Close route details"><X size={14} /></button></div><div className="route-summary">{actorLabel(selected.route.actorType)} · {selected.route.points.length} waypoints · {selected.route.legModes.filter((mode) => mode === 'drive').length} drive legs · {selected.route.legModes.filter((mode) => mode === 'walk').length} walk legs</div><button className="save-scene-button route-play-button" onClick={() => toggleRoutePlayback(selected.id)}>{playingRouteIds.includes(selected.id) ? <><Pause size={14} /> Pause {actorLabel(selected.route.actorType)}</> : <><Play size={14} /> Simulate {actorLabel(selected.route.actorType)}</>}</button><div className="route-legend"><span><i className="drive-dot" />Drive</span><span><i className="walk-dot" />Walk</span></div></div>
+            if (!selected.scene) return null
+            return <div className="scene-detail-card"><div className="scene-detail-heading"><b>{selected.name}</b><button className="scene-edit-button" onClick={() => beginSceneEdit(selected)}><Pencil size={12} />Edit</button><button className="icon-button tiny" onClick={() => setSelectedSceneId(null)} aria-label="Close scene details"><X size={14} /></button></div><div className="scene-detail-coords">{selected.scene.latitude.toFixed(5)}°, {selected.scene.longitude.toFixed(5)}°</div><div className="scene-detail-stats"><span>ALT AGL <b>{selected.scene.altitude} m</b></span><span>HDG <b>{String(selected.scene.heading).padStart(3, '0')}°</b></span><span>PITCH <b>{String(selected.scene.pitch).padStart(2, '0')}°</b></span></div><small className="scene-drag-hint">Drag map point vertically to change altitude</small>{selected.scene.imageUrl && <img className="scene-detail-image" src={selected.scene.imageUrl} alt={selected.scene.imageName || 'Scene attachment'} />}{selected.scene.imageName && <small className="scene-image-name">{selected.scene.imageName}</small>}{selected.scene.notes && <p className="scene-detail-notes">{selected.scene.notes}</p>}</div>
+          })()}
         </section>
         <div className="sidebar-spacer" />
         <div className="runtime-card"><div className="runtime-card-top"><span className="model-orb"><Bot size={16} /></span><span><b>Local AI agent</b><small>{modelName}</small></span><span className="live-tag">LIVE</span></div><div className="runtime-status"><span className="status-dot" />{status}</div><div className="runtime-foot"><span><Activity size={13} /> GB10 runtime</span><button className="text-button" onClick={() => setStatus('Agent uses the configured local OpenAI-compatible endpoint.')}>Details</button></div></div>
-        <div className="sidebar-footer"><span>FIELDVIEW LABS · 0.1.0</span><span className="help-link">HELP CENTER</span></div>
+        <div className="sidebar-footer"><span>SAFETENSOR · 0.1.0</span><span className="help-link">HELP CENTER</span></div>
       </aside>
 
-      <section className="map-workspace"><div className={`map-canvas ${pickMode || aoiPickMode ? 'pick-mode' : ''}`} ref={mapRoot} />
+      <section className="map-workspace"><div className={`map-canvas ${pickMode || aoiPickMode || routePickMode ? 'pick-mode' : ''}`} ref={mapRoot} />
         <div className="map-top-overlay"><div className="location-chip"><span className="loc-dot" /><span>HULT BOSTON CAMPUS · CAMBRIDGE</span><span className="coord-sep">/</span><span className="coords">42.3701° N&nbsp; 71.0707° W</span></div><div className="map-actions"><button className="map-action" onClick={() => document.getElementById('file-upload')?.click()}><FileUp size={14} /> Import</button><button className="map-action" onClick={() => setShowTilesInput(true)}><Layers3 size={14} /> 3D Tiles</button></div></div>
-        {(pickMode || aoiPickMode) && <div className="map-pick-toast"><MapPin size={15} />{aoiPickMode ? 'Click the area of interest to set heading and pitch' : 'Click anywhere on the map to place the observer point'}</div>}
-        <div className="assistant-panel"><div className="assistant-heading"><div className="assistant-icon"><Sparkles size={16} /></div><div><b>Map assistant</b><small>Describe what you want to add</small></div><span className="local-badge"><span className="status-dot" /> LOCAL</span></div>
+        {(pickMode || aoiPickMode || routePickMode) && <div className="map-pick-toast"><MapPin size={15} />{routePickMode ? 'Click the map to add route waypoints' : aoiPickMode ? 'Click the area of interest to set heading and pitch' : 'Click anywhere on the map to place the observer point'}</div>}
+        <div className={`assistant-panel ${assistantCollapsed ? 'is-collapsed' : ''}`}><div className="assistant-heading"><div className="assistant-icon"><Sparkles size={16} /></div><div><b>Map assistant</b><small>{assistantCollapsed ? 'Click to expand' : 'Describe what you want to add'}</small></div><span className="local-badge"><span className="status-dot" /> LOCAL</span><button className="assistant-collapse-button" onClick={() => setAssistantCollapsed((collapsed) => !collapsed)} title={assistantCollapsed ? 'Expand map assistant' : 'Collapse map assistant'} aria-label={assistantCollapsed ? 'Expand map assistant' : 'Collapse map assistant'}>{assistantCollapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</button></div>
+          {!assistantCollapsed && <>
           <div className="prompt-suggestions">{examples.map((example) => <button key={example} onClick={() => { setPrompt(example); void requestProposal(example) }}>{example}</button>)}</div>
           <div className="prompt-box"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void requestProposal() } }} placeholder="Ask the agent to create or analyze a map layer…" rows={2} /><button className="send-button" disabled={busy || !prompt.trim()} onClick={() => void requestProposal()} aria-label="Send prompt">{busy ? <span className="spinner" /> : <Send size={15} />}</button></div>
           {error && <div className="error-message">{error}</div>}
           {proposal && <div className="proposal-card"><div className="proposal-title"><span className="proposal-check"><Sparkles size={13} /></span><b>Proposed map edit</b><button className="icon-button tiny" onClick={() => setProposal(null)} aria-label="Dismiss proposal"><X size={14} /></button></div><p>{proposal.summary}</p><div className="proposal-meta"><span>{proposal.geojson.features.length} features</span><span>GeoJSON layer</span></div><button className="apply-button" onClick={() => void applyProposal()}><Check size={15} /> Review and add to map</button></div>}
           <div className="assistant-note"><span className="lock-mark">⌑</span>Runs on your local AI endpoint <span className="note-sep">·</span> Map edits need your approval</div>
+          </>}
         </div>
         <div className="map-scale">1 km <span className="scale-line" /></div>
       </section>

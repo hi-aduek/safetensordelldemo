@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Cambridge Food Fest — North Point Park</name>
+    <Style id="parkBoundary">
+      <LineStyle><color>ff6af3c6</color><width>3</width></LineStyle>
+      <PolyStyle><color>556af3c6</color><fill>1</fill><outline>1</outline></PolyStyle>
+    </Style>
+    <Placemark>
+      <name>Cambridge Food Fest: 2500 participants</name>
+      <description><![CDATA[Event location: North Point Park, Cambridge, Massachusetts. Estimated attendance: 2,500 participants.]]></description>
+      <Point>
+        <coordinates>-71.069528,42.369167,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name>North Point Park boundary (approximate)</name>
+      <description><![CDATA[Approximate park footprint for visualization; verify against authoritative survey/GIS boundary before operational use.]]></description>
+      <styleUrl>#parkBoundary</styleUrl>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              -71.07240,42.36952,0
+              -71.07170,42.36965,0
+              -71.07040,42.36968,0
+              -71.06915,42.36963,0
+              -71.06795,42.36958,0
+              -71.06690,42.36949,0
+              -71.06625,42.36928,0
+              -71.06655,42.36898,0
+              -71.06755,42.36882,0
+              -71.06875,42.36872,0
+              -71.06995,42.36870,0
+              -71.07100,42.36877,0
+              -71.07190,42.36891,0
+              -71.07248,42.36912,0
+              -71.07240,42.36952,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>
